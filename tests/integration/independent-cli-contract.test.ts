@@ -159,18 +159,20 @@ describe("independent agy process contract", () => {
       options.onSpawn?.({ pid: pending.length + 1 });
       return new Promise((resolve) => pending.push(resolve));
     });
-    const first = ctx({ runId: "run-a", config: { promptTemplate: "prompt-a" } });
-    const second = ctx({ runId: "run-b", config: { promptTemplate: "prompt-b" } });
+    const sharedSession = { sessionId: "shared-session", sessionParams: { sessionId: "shared-session", remoteExecution: { kind: "remote" } } };
+    const first = ctx({ runId: "run-a", runtime: sharedSession, config: { promptTemplate: "prompt-a" } });
+    const second = ctx({ runId: "run-b", runtime: sharedSession, config: { promptTemplate: "prompt-b" } });
     const firstRun = execute(first);
     const secondRun = execute(second);
     await vi.waitFor(() => expect(fake.process).toHaveBeenCalledTimes(2));
     expect(fake.process.mock.calls.map((call) => [call[0], call[3][1]])).toEqual([["run-a", "prompt-a"], ["run-b", "prompt-b"]]);
+    expect(fake.process.mock.calls.map((call) => call[3].slice(2, 4))).toEqual([["--conversation", "shared-session"], ["--conversation", "shared-session"]]);
     expect(first.onSpawn).toHaveBeenCalledWith({ pid: 1 });
     expect(second.onSpawn).toHaveBeenCalledWith({ pid: 2 });
-    pending[1](result({ stdout: '{"conversationId":"session-b"}' }));
-    pending[0](result({ stdout: '{"conversationId":"session-a"}' }));
-    expect((await firstRun).sessionId).toBe("session-a");
-    expect((await secondRun).sessionId).toBe("session-b");
+    pending[1](result({ stdout: "answer-b" }));
+    pending[0](result({ stdout: "answer-a" }));
+    expect(await firstRun).toMatchObject({ sessionId: "shared-session", summary: "answer-a" });
+    expect(await secondRun).toMatchObject({ sessionId: "shared-session", summary: "answer-b" });
     expect(fake.restore).toHaveBeenCalledTimes(2);
   });
 
