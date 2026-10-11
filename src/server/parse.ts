@@ -40,6 +40,17 @@ const AGY_SESSION_ID_RE =
   /(?:conversation|session|conv)[_\s]?id["']?\s*[:=]\s*["']?([a-zA-Z0-9][a-zA-Z0-9_-]{3,127})["']?/i;
 
 /**
+ * Everything on a line *before* a matched session-id key must be nothing but
+ * whitespace/JSON scaffolding (`{`, `[`, `,`, `"`) for the match to be trusted. This is the
+ * provenance check called for in the security review: a loose substring match anywhere in
+ * combined stdout/stderr would let an attacker-influenced model response (e.g. via prompt
+ * injection) spoof a session id simply by echoing matching text inside its own prose. Requiring
+ * the key to sit at the start of a line, or at the start of a JSON object/field, rejects
+ * matches embedded inside free-form narrative text.
+ */
+const STRUCTURAL_PREFIX_RE = /^[\s{,"[]*$/;
+
+/**
  * Checks whether the CLI process execution failed because the requested conversation
  * session was unknown, deleted, or otherwise not found.
  */
@@ -123,9 +134,16 @@ export function extractAntigravitySessionId(stdout: string, stderr: string): str
   const lines = combineAndCleanLines(stdout, stderr);
   for (const line of lines) {
     const match = AGY_SESSION_ID_RE.exec(line);
-    if (match?.[1]) {
-      return match[1];
+    if (!match?.[1]) {
+      continue;
     }
+    const prefix = line.slice(0, match.index);
+    if (!STRUCTURAL_PREFIX_RE.test(prefix)) {
+      // The key appears mid-sentence inside free-form text rather than at a recognized
+      // output location/shape — do not trust it as a session id.
+      continue;
+    }
+    return match[1];
   }
   return null;
 }

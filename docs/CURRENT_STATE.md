@@ -2,6 +2,30 @@
 
 _Last updated: 2026-10-11 by NEXUS, on branch `claude/adapter-implementation-p0`._
 
+## NEX-5: PR #1 review fixes — done, pushed, PR #1 still open against `main`
+
+Merged PR #2 (test-only, `codex-rawea/adapter-tests-p0`) into this branch, then fixed its 2
+known-failing regression tests plus the 4 findings from Codex Ma72's security review on PR #1
+(dangerous-flag probe leak, session-id spoofing/provenance, resume-session workspace binding,
+CLI-output diagnostics redaction). Full detail and the exact fix for each finding is in
+`docs/UPSTREAM_PROVENANCE.md` ("PR #1 review fixes (NEX-5)"). `npm run typecheck`, `npm run
+build`, and `npm test` all pass (98/98) — see the Paperclip issue comment and commit history on
+this branch for the exact output. PR #1 (`claude/adapter-implementation-p0` → `main`) is
+unchanged by this work item's boundaries: still needs CI green plus a review from an identity
+other than the one that opened it before it can merge.
+
+**`--add-dir` workspace path containment — deliberately deferred, not silently skipped:**
+Ma72's review also flagged that `--add-dir` workspace paths are otherwise unvalidated. This fork
+now resolves each workspace `cwd` through `path.resolve` before it reaches `--add-dir` (closing
+simple `.`/`..` traversal), but does **not** enforce that every workspace path falls under a
+single configured "workspace root." Rationale: there is no such single-root concept in this
+codebase today — Paperclip legitimately registers multiple independent workspace directories
+(one per repo/context) via `context.paperclipWorkspaces`, and the adapter's own `cwd` config
+field is only the *default* process directory, not a declared boundary those workspaces must
+nest under. Enforcing containment against the wrong boundary would silently break legitimate
+multi-workspace runs. Revisit if/when Paperclip's platform-level adapter contract adds an
+explicit "permitted workspace roots" concept to validate against.
+
 ## P0: upstream audit + import — implementation done, not yet mergeable
 
 - **Code:** `src/` now contains a working, type-checked implementation forked from

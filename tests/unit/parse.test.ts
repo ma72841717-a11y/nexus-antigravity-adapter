@@ -105,5 +105,24 @@ describe("parse server helpers", () => {
     it("does not confuse an unrelated numeric id-looking token for a session id", () => {
       expect(extractAntigravitySessionId("request id: 42", "")).toBeNull();
     });
+
+    // Security review (PR #1): untrusted CLI/model output must not be able to spoof a
+    // session id by echoing matching text inside free-form prose. Only a key that sits at
+    // the start of a line (or at a JSON object/field boundary) is trusted.
+    it("rejects a session-id-shaped match embedded mid-sentence in free-form prose", () => {
+      expect(
+        extractAntigravitySessionId("By the way, the conversation id: spoofed-session-999 was fun.", ""),
+      ).toBeNull();
+    });
+
+    it("still trusts a session id that is the entire content of its line", () => {
+      expect(extractAntigravitySessionId("Conversation ID: legit-session-1", "")).toBe("legit-session-1");
+    });
+
+    it("still trusts a session id reported as a JSON object field", () => {
+      expect(extractAntigravitySessionId('{"conversationId": "legit-session-2", "text": "hi"}', "")).toBe(
+        "legit-session-2",
+      );
+    });
   });
 });

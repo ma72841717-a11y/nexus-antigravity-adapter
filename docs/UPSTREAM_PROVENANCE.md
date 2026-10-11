@@ -79,3 +79,44 @@ that three things changed between those releases and fixed accordingly:
 `npm run typecheck`, `npm run build`, and `npm test` (69 tests, `tests/unit/` +
 `tests/integration/execute.test.ts`) all pass locally against this pin — see the PR for the
 exact commands and output.
+
+## PR #1 review fixes (NEX-5)
+
+An independent reviewer (`codex-rawea/adapter-tests-p0`, merged as PR #2) added
+`tests/integration/independent-cli-contract.test.ts` against this fork's own `execute()`, and
+a second independent review (Codex Ma72, posted as a PR #1 review comment) found four further
+issues. All are fixed on `claude/adapter-implementation-p0`:
+
+1. **Dangerous-flag probe leak.** `server/test.ts`'s hello/probe call read
+   `config.dangerouslySkipPermissions` and `config.extraArgs`/`config.args` into its own argument
+   list, so the opt-in-only bypass flag could reach the probe through `extraArgs` even with
+   `dangerouslySkipPermissions` left at its default `false`. Fixed structurally: the probe's
+   argument list is now built from a fixed literal set (`--print`, the literal probe prompt, and
+   an optional `--sandbox`) that cannot be extended by any config value. See
+   `tests/unit/test-environment.test.ts`.
+2. **Session-id spoofing / provenance.** `extractAntigravitySessionId` (`server/parse.ts`) trusted
+   any substring of combined stdout/stderr matching its key pattern, anywhere in the text —
+   including inside the model's own free-form response, which can be influenced by prompt
+   injection. Fixed: a match is only trusted when everything before it on its line is pure
+   whitespace/JSON scaffolding (start of line, or start of a JSON object/field), rejecting matches
+   embedded mid-sentence in prose. See `tests/unit/parse.test.ts`.
+3. **Resume-session/workspace collision.** `execute()` only checked execution-target identity
+   before resuming a stored session id, not workspace identity, so a session id could in
+   principle be resumed against an unrelated workspace sharing the same execution target. Fixed:
+   resume now also requires the stored and current workspace identity to match (by
+   `workspaceId` when either side has one, else by the resolved execution cwd). See
+   `tests/integration/execute.test.ts` ("execute() session resume workspace binding").
+4. **Diagnostics leaking raw CLI output/credentials.** Failure paths built `errorMessage` (and
+   `resultJson.raw`/`summary`) directly from raw CLI stdout/stderr, so a failing or misbehaving
+   CLI process echoing credential material back would leak it straight through. Fixed with one
+   shared sanitization path (`server/redact.ts`'s `redactSecrets`) applied to stdout/stderr before
+   either is used anywhere in the returned result. The same pass also fixed a related bug: a
+   signal-terminated run with no exit code (`exitCode: null`) was being treated as a *successful*
+   run (`(null ?? 0) !== 0` is `false`) and silently returned `errorMessage: null`; it now reports
+   `Antigravity terminated by signal <signal>`.
+
+**Noted but not a hard blocker, fixed as a small contained change:** `--add-dir` workspace paths
+were passed to the CLI unresolved. `compileAgyArguments` now runs each workspace cwd through
+`path.resolve` to collapse `.`/`..` traversal segments before it reaches `--add-dir`. Full
+containment against a single configured "workspace root" is deliberately **not** enforced — see
+`docs/CURRENT_STATE.md` for why.

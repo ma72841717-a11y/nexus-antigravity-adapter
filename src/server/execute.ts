@@ -70,6 +70,7 @@ import {
 import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { firstNonEmptyLine } from "../utils.js";
 import { extractAntigravitySessionId } from "./parse.js";
+import { redactSecrets } from "./redact.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -202,7 +203,11 @@ export function compileAgyArguments(
     const wsObj = parseObject(ws);
     const wsCwd = asString(wsObj.cwd, "");
     if (wsCwd.length > 0) {
-      args.push("--add-dir", wsCwd);
+      // Resolve away any `..`/`.` traversal segments before handing the path to the CLI.
+      // Containment against a single configured workspace root is deliberately not enforced
+      // here: Paperclip legitimately registers multiple independent workspace directories
+      // (see docs/CURRENT_STATE.md for the documented rationale).
+      args.push("--add-dir", path.resolve(wsCwd));
     }
   }
 
@@ -352,8 +357,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+
+  // Bind resume lookups to workspace identity, not just execution-target identity: a
+  // session id is only a valid key within the workspace it was minted in. Without this,
+  // a session id that happened to match on a shared/remote execution target could be
+  // resumed against an unrelated workspace (collision risk flagged in security review).
+  // Prefer the explicit Paperclip workspaceId when either side declares one (exact match
+  // required); otherwise fall back to comparing the resolved execution cwd, since that is
+  // always populated for every session this adapter itself persists.
+  const currentWorkspaceId = asString(workspaceContext.workspaceId, "");
+  const storedWorkspaceId = asString(runtimeSessionParams.workspaceId, "");
+  const workspaceIdentityMatches =
+    currentWorkspaceId.length > 0 || storedWorkspaceId.length > 0
+      ? currentWorkspaceId === storedWorkspaceId
+      : asString(runtimeSessionParams.cwd, "") === effectiveExecutionCwd;
+
   const canResumeSession =
     runtimeSessionId.length > 0 &&
+    workspaceIdentityMatches &&
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
   const resumeSessionId = canResumeSession ? runtimeSessionId : null;
 
@@ -405,10 +426,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
-    const failed = (proc.exitCode ?? 0) !== 0;
-    const rawStdout = proc.stdout.trim();
-    const rawStderr = proc.stderr.trim();
-    const fallbackErrorMessage = firstNonEmptyLine(rawStderr) || `Antigravity exited with code ${proc.exitCode ?? -1}`;
+    // A process killed by a signal reports `exitCode: null`; treat that as a failure in its
+    // own right rather than defaulting the missing exit code to 0 (success). Upstream of this
+    // fix, a signal-terminated run with no exit code silently reported as successful.
+    const failed = proc.exitCode !== 0 || Boolean(proc.signal);
+
+    // Single shared sanitization path: anything derived from raw CLI stdout/stderr — the
+    // error message, the summary, and resultJson.raw below — goes through this redaction
+    // before it can reach a thrown error or a returned field, so credential material (or
+    // other secrets the CLI process was launched with) echoed back by a failing/misbehaving
+    // CLI can never leak through to the caller.
+    const cliSecrets = [authToken, env.PAPERCLIP_API_KEY, envConfig.ANTIGRAVITY_API_KEY as string | undefined];
+    const rawStdout = redactSecrets(proc.stdout.trim(), cliSecrets);
+    const rawStderr = redactSecrets(proc.stderr.trim(), cliSecrets);
+    const fallbackErrorMessage =
+      firstNonEmptyLine(rawStderr) ||
+      (proc.signal ? `Antigravity terminated by signal ${proc.signal}` : `Antigravity exited with code ${proc.exitCode ?? -1}`);
 
     // Resolve the session id to persist: prefer the one we resumed; otherwise, on a
     // successful fresh run, try to recover the id `agy` itself minted for the new

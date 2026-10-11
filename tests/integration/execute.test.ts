@@ -180,12 +180,69 @@ describe("execute() session/conversation id capture", () => {
       pid: 123,
       startedAt: null,
     });
-    const ctx = buildCtx({ runtime: { sessionId: "existing-session", sessionParams: { sessionId: "existing-session" } } });
+    const ctx = buildCtx({
+      runtime: { sessionId: "existing-session", sessionParams: { sessionId: "existing-session", cwd: "/remote/workspace" } },
+    });
     const result = await execute(ctx);
 
     expect(result.sessionId).toBe("existing-session");
     const [, , , args] = runAdapterExecutionTargetProcess.mock.calls[0];
     expect(args).toEqual(expect.arrayContaining(["--conversation", "existing-session"]));
+  });
+});
+
+describe("execute() session resume workspace binding", () => {
+  // New in this fork: a stored session id is only resumable within the workspace it was
+  // minted in. Without this, a session id that happened to match on execution-target
+  // identity alone could be resumed against a completely unrelated workspace.
+  beforeEach(() => {
+    runAdapterExecutionTargetProcess.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "ok",
+      stderr: "",
+      pid: 1,
+      startedAt: null,
+    });
+  });
+
+  it("refuses to resume a session minted for a different Paperclip workspaceId", async () => {
+    const ctx = buildCtx({
+      context: { paperclipWorkspace: { workspaceId: "ws-current" }, paperclipWorkspaces: [] },
+      runtime: {
+        sessionId: "session-from-other-workspace",
+        sessionParams: { sessionId: "session-from-other-workspace", workspaceId: "ws-other" },
+      },
+    });
+    await execute(ctx);
+    const [, , , args] = runAdapterExecutionTargetProcess.mock.calls[0];
+    expect(args).not.toContain("--conversation");
+  });
+
+  it("resumes a session whose stored workspaceId matches the current one", async () => {
+    const ctx = buildCtx({
+      context: { paperclipWorkspace: { workspaceId: "ws-current" }, paperclipWorkspaces: [] },
+      runtime: {
+        sessionId: "session-same-workspace",
+        sessionParams: { sessionId: "session-same-workspace", workspaceId: "ws-current" },
+      },
+    });
+    await execute(ctx);
+    const [, , , args] = runAdapterExecutionTargetProcess.mock.calls[0];
+    expect(args).toEqual(expect.arrayContaining(["--conversation", "session-same-workspace"]));
+  });
+
+  it("refuses to resume a session minted under a different cwd when neither side has a workspaceId", async () => {
+    const ctx = buildCtx({
+      runtime: {
+        sessionId: "session-from-other-cwd",
+        sessionParams: { sessionId: "session-from-other-cwd", cwd: "/remote/some-other-workspace" },
+      },
+    });
+    await execute(ctx);
+    const [, , , args] = runAdapterExecutionTargetProcess.mock.calls[0];
+    expect(args).not.toContain("--conversation");
   });
 });
 

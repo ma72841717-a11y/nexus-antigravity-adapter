@@ -6,10 +6,15 @@
  * Forked from `@weslleycapelari/adapter-antigravity-local` at pinned commit
  * `691725a674ec28b566868b39898ffa3ff0eae4f2`. See docs/UPSTREAM_PROVENANCE.md.
  *
- * Fork changes: the hello probe now builds its argument list with the same safe defaults
- * as execute.ts (sandbox on by default, `--dangerously-skip-permissions` opt-in only), and
- * the check list surfaces same-host execution risk explicitly instead of staying silent
- * about it.
+ * Fork changes: the hello probe builds its argument list from a fixed set — `--print`, the
+ * literal probe prompt, and an optional `--sandbox` — that cannot be extended by caller
+ * config. `--dangerously-skip-permissions` and any configured `extraArgs`/`args` are never
+ * appended to the probe call, structurally (not just by convention), because a prior version
+ * read both `config.dangerouslySkipPermissions` and `config.extraArgs` into the probe's
+ * argument list, which meant an operator could smuggle the dangerous flag onto the opt-in-only
+ * probe through `extraArgs` even with `dangerouslySkipPermissions` left at its default `false`
+ * (see security review on PR #1). The check list also surfaces same-host execution risk
+ * explicitly instead of staying silent about it.
  *
  * @copyright Antigravity Adapter Contributors (upstream), NEXUS AI Factory (fork changes)
  * @license MIT
@@ -25,7 +30,6 @@ import {
   asBoolean,
   asNumber,
   asString,
-  asStringArray,
   ensurePathInEnv,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -204,24 +208,15 @@ async function performHelloTelemetryProbe(
   }
 
   const sandbox = asBoolean(config.sandbox, true);
-  const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
   const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 60));
 
-  const extraArgs = (() => {
-    const fromExtraArgs = asStringArray(config.extraArgs);
-    if (fromExtraArgs.length > 0) return fromExtraArgs;
-    return asStringArray(config.args);
-  })();
-
+  // Fixed arg list: the diagnostic probe never needs, and must never receive, the dangerous
+  // permission-bypass flag or any caller-supplied extraArgs/args — those are opt-in for real
+  // execution only. Building this list from literals (not spreading any config-derived array)
+  // closes the path structurally rather than relying on convention.
   const args = ["--print", "Respond with hello."];
   if (sandbox) {
     args.push("--sandbox");
-  }
-  if (dangerouslySkipPermissions) {
-    args.push("--dangerously-skip-permissions");
-  }
-  if (extraArgs.length > 0) {
-    args.push(...extraArgs);
   }
 
   const probe = await runAdapterExecutionTargetProcess(

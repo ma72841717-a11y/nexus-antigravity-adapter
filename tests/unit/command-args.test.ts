@@ -57,6 +57,11 @@ describe("compileAgyArguments", () => {
     expect(args).not.toContain("--add-dir");
   });
 
+  it("resolves away `..`/`.` traversal segments in a workspace cwd before passing it to --add-dir", () => {
+    const args = compileAgyArguments("hello", null, [{ cwd: "/ws/one/../two" }], baseOptions);
+    expect(args).toEqual(expect.arrayContaining(["--add-dir", "/ws/two"]));
+  });
+
   it("appends extraArgs last, after safety flags", () => {
     const args = compileAgyArguments("hello", null, [], { ...baseOptions, extraArgs: ["--foo", "--bar"] });
     expect(args.slice(-2)).toEqual(["--foo", "--bar"]);
