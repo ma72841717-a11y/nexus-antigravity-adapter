@@ -1,0 +1,29 @@
+{
+  "name": "@nexus-ai-factory/adapter-antigravity-local",
+  "version": "0.1.0-p0",
+  "license": "MIT",
+  "description": "Paperclip adapter for the Google Antigravity (agy) CLI, forked from @weslleycapelari/adapter-antigravity-local with safety hardening.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./server": "./dist/server/index.js",
+    "./ui": "./dist/ui/index.js",
+    "./cli": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc && cp package.json dist/",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-utils": "2026.1005.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.7"
+  }
+}

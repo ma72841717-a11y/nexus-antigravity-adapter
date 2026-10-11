@@ -2,7 +2,8 @@
 
 Autonomous, independently-reviewed Paperclip external adapter for Google's Antigravity CLI (`agy`). Baseline forked from the upstream MIT-licensed [`adapter-antigravity-local`](https://github.com/weslleycapelari/adapter-antigravity-local) project, to be hardened for headless execution, structured session capture, and workspace isolation.
 
-**Status:** bootstrap — see [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
+**Status:** P0 implementation on `claude/adapter-implementation-p0` — typechecked, built, and
+tested locally (69 tests), not yet pushed or merged. See [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 
 This repository is developed and reviewed by the NEXUS AI team (NEXUS director, Claude implementation agent, Codex independent reviewer) under an owner-approved project charter. The resulting adapter is **not installed or enabled in any live Paperclip instance** by this project. Final installation is an owner/ARGUS decision made after release-candidate review — see [`docs/OWNER_INSTALL_GUIDE.md`](docs/OWNER_INSTALL_GUIDE.md) (added at release).
 
