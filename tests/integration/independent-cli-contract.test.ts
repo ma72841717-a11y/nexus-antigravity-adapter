@@ -4,8 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // credential is used; the fake returns the same shape as the execution-target runner.
 const fake = vi.hoisted(() => ({
   process: vi.fn(),
+  restore: vi.fn(async () => {}),
   prepare: vi.fn(async () => ({
-    restoreWorkspace: async () => {},
+    restoreWorkspace: fake.restore,
     workspaceRemoteDir: "/remote/project",
     runtimeRootDir: "/remote/runtime",
   })),
@@ -16,8 +17,11 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
   adapterExecutionTargetIsRemote: (target: { kind?: string } | null) => target?.kind === "remote",
   adapterExecutionTargetRemoteCwd: (_target: unknown, cwd: string) => cwd,
   overrideAdapterExecutionTargetRemoteCwd: (target: unknown) => target,
-  adapterExecutionTargetSessionIdentity: () => ({ kind: "remote" }),
-  adapterExecutionTargetSessionMatches: (saved: { kind?: string }) => saved.kind === "remote",
+  adapterExecutionTargetSessionIdentity: (target: { kind?: string; remoteWorkspacePath?: string; targetId?: string }) => ({
+    kind: target.kind, remoteWorkspacePath: target.remoteWorkspacePath, targetId: target.targetId,
+  }),
+  adapterExecutionTargetSessionMatches: (saved: { kind?: string; remoteWorkspacePath?: string; targetId?: string }, target: { kind?: string; remoteWorkspacePath?: string; targetId?: string }) =>
+    saved.kind === target.kind && saved.remoteWorkspacePath === target.remoteWorkspacePath && saved.targetId === target.targetId,
   adapterExecutionTargetUsesPaperclipBridge: () => false,
   describeAdapterExecutionTarget: () => "isolated test target",
   ensureAdapterExecutionTargetCommandResolvable: async () => {},
@@ -75,6 +79,7 @@ function invocation() {
 beforeEach(() => {
   fake.process.mockReset().mockResolvedValue(result());
   fake.prepare.mockClear();
+  fake.restore.mockClear();
 });
 
 describe("independent agy process contract", () => {
@@ -122,6 +127,65 @@ describe("independent agy process contract", () => {
   it("starts fresh when a stored session belongs to a different execution target", async () => {
     await execute(ctx({ runtime: { sessionId: "old-123", sessionParams: { sessionId: "old-123", remoteExecution: { kind: "other" } } } }));
     expect(invocation().args).not.toContain("--conversation");
+  });
+
+  it.each([
+    ["workspace path", { kind: "remote", remoteWorkspacePath: "/remote/workspace-b", targetId: "target-a" }],
+    ["execution target", { kind: "remote", remoteWorkspacePath: "/remote/workspace-a", targetId: "target-b" }],
+  ])("does not resume a session captured under a different %s", async (_label, executionTarget) => {
+    const saved = { sessionId: "session-from-a", remoteExecution: { kind: "remote", remoteWorkspacePath: "/remote/workspace-a", targetId: "target-a" } };
+    const actual = await execute(ctx({ runtime: { sessionId: saved.sessionId, sessionParams: saved }, executionTarget }));
+    expect(invocation().args).not.toContain("--conversation");
+    expect(actual.sessionId).toBeNull();
+  });
+
+  it("passes shell metacharacters from workspace, extra args, and environment as inert values", async () => {
+    const payload = "; | & $(echo never) `echo never`";
+    await execute(ctx({
+      runId: payload,
+      config: { cwd: `/work/${payload}`, extraArgs: ["--literal", payload] },
+      context: { paperclipWorkspace: { cwd: `/work/${payload}` }, paperclipWorkspaces: [{ cwd: `/other/${payload}` }] },
+    }));
+    const { command, args, options } = invocation();
+    expect(command).toBe("agy");
+    expect(args).toEqual(["--print", "independent test prompt", "--add-dir", `/other/${payload}`, "--sandbox", "--literal", payload]);
+    expect(options.cwd).toBe(`/work/${payload}`);
+    expect(options.env.PAPERCLIP_RUN_ID).toBe(payload);
+  });
+
+  it("keeps overlapping calls and their process handles separate", async () => {
+    const pending: Array<(value: ReturnType<typeof result>) => void> = [];
+    fake.process.mockImplementation((_runId, _target, _command, _args, options) => {
+      options.onSpawn?.({ pid: pending.length + 1 });
+      return new Promise((resolve) => pending.push(resolve));
+    });
+    const first = ctx({ runId: "run-a", config: { promptTemplate: "prompt-a" } });
+    const second = ctx({ runId: "run-b", config: { promptTemplate: "prompt-b" } });
+    const firstRun = execute(first);
+    const secondRun = execute(second);
+    await vi.waitFor(() => expect(fake.process).toHaveBeenCalledTimes(2));
+    expect(fake.process.mock.calls.map((call) => [call[0], call[3][1]])).toEqual([["run-a", "prompt-a"], ["run-b", "prompt-b"]]);
+    expect(first.onSpawn).toHaveBeenCalledWith({ pid: 1 });
+    expect(second.onSpawn).toHaveBeenCalledWith({ pid: 2 });
+    pending[1](result({ stdout: '{"conversationId":"session-b"}' }));
+    pending[0](result({ stdout: '{"conversationId":"session-a"}' }));
+    expect((await firstRun).sessionId).toBe("session-a");
+    expect((await secondRun).sessionId).toBe("session-b");
+    expect(fake.restore).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores the prepared workspace when a mocked mid-flight cancellation rejects", async () => {
+    let rejectProcess!: (reason: Error) => void;
+    fake.process.mockImplementation(() => new Promise((_resolve, reject) => { rejectProcess = reject; }));
+    const input = ctx();
+    const running = execute(input);
+    await vi.waitFor(() => expect(fake.process).toHaveBeenCalledTimes(1));
+    const cancelled = new Error("cancelled after spawn");
+    cancelled.name = "AbortError";
+    rejectProcess(cancelled);
+    await expect(running).rejects.toBe(cancelled);
+    expect(fake.restore).toHaveBeenCalledTimes(1);
+    expect(fake.process.mock.calls[0][4].onSpawn).toBe(input.onSpawn);
   });
 
   it.each([
