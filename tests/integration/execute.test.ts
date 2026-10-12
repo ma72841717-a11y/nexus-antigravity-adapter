@@ -52,7 +52,9 @@ vi.mock("@paperclipai/adapter-utils/server-utils", () => ({
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE: "default-template",
 }));
 
-const { execute, AntigravitySameHostExecutionRefusedError } = await import("../../src/server/execute.js");
+const { execute, AntigravitySameHostExecutionRefusedError, AntigravityRelativeWorkspacePathError } = await import(
+  "../../src/server/execute.js"
+);
 
 function buildCtx(overrides: Record<string, unknown> = {}) {
   return {
@@ -303,5 +305,41 @@ describe("execute() safety flag wiring end-to-end", () => {
     await execute(disabledCtx);
     const [, , , disabledArgs] = runAdapterExecutionTargetProcess.mock.calls[0];
     expect(disabledArgs).not.toContain("--sandbox");
+  });
+});
+
+describe("execute() --add-dir path contract against a remote execution target", () => {
+  // `agy` runs against `effectiveExecutionCwd` on a possibly-remote `executionTarget`
+  // (buildCtx() defaults to { kind: "remote" }), not against this test process's own cwd.
+  // A relative workspace cwd can only be resolved correctly by whoever knows that remote
+  // filesystem's coordinate system — resolving it here against this process's cwd would
+  // silently produce a path meaningful only on the wrong (local) filesystem.
+  beforeEach(() => {
+    runAdapterExecutionTargetProcess.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "ok",
+      stderr: "",
+      pid: 1,
+      startedAt: null,
+    });
+  });
+
+  it("refuses a relative workspace cwd rather than silently resolving it against the host's own cwd", async () => {
+    const ctx = buildCtx({
+      context: { paperclipWorkspace: {}, paperclipWorkspaces: [{ cwd: "relative/workspace" }] },
+    });
+    await expect(execute(ctx)).rejects.toThrow(AntigravityRelativeWorkspacePathError);
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+  });
+
+  it("passes an absolute workspace cwd through to --add-dir unchanged (normalized, not re-rooted)", async () => {
+    const ctx = buildCtx({
+      context: { paperclipWorkspace: {}, paperclipWorkspaces: [{ cwd: "/remote/workspace/./nested" }] },
+    });
+    await execute(ctx);
+    const [, , , args] = runAdapterExecutionTargetProcess.mock.calls[0];
+    expect(args).toEqual(expect.arrayContaining(["--add-dir", "/remote/workspace/nested"]));
   });
 });

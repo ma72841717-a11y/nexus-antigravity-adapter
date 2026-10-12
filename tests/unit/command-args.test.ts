@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compileAgyArguments } from "../../src/server/execute.js";
+import { compileAgyArguments, AntigravityRelativeWorkspacePathError } from "../../src/server/execute.js";
 
 /**
  * Unit tests for the `agy` CLI argument builder, split out of `execute()` in this fork so
@@ -60,6 +60,15 @@ describe("compileAgyArguments", () => {
   it("resolves away `..`/`.` traversal segments in a workspace cwd before passing it to --add-dir", () => {
     const args = compileAgyArguments("hello", null, [{ cwd: "/ws/one/../two" }], baseOptions);
     expect(args).toEqual(expect.arrayContaining(["--add-dir", "/ws/two"]));
+  });
+
+  it("rejects a relative workspace cwd instead of resolving it against this process's own cwd", () => {
+    // `agy` runs on a possibly-remote execution target (see execute()'s
+    // `effectiveExecutionCwd`/`executionTarget`); this process's own cwd has no relationship
+    // to that target's filesystem, so a relative path must never be silently resolved here.
+    expect(() => compileAgyArguments("hello", null, [{ cwd: "relative/workspace" }], baseOptions)).toThrow(
+      AntigravityRelativeWorkspacePathError,
+    );
   });
 
   it("appends extraArgs last, after safety flags", () => {

@@ -23,6 +23,15 @@
  *     itself in its own output, was never captured, so no run could ever be resumed past its
  *     first turn. This fork extracts a freshly-minted session id via
  *     `extractAntigravitySessionId` (see parse.ts) when no existing session was resumed.
+ *  5. `--add-dir` path contract: upstream passed workspace `cwd` straight through to
+ *     `path.resolve()`, which silently anchors a relative path against *this process's*
+ *     own cwd. Since `agy` actually runs against `effectiveExecutionCwd` on
+ *     `executionTarget` — frequently a remote host or sandbox with no relationship to the
+ *     Paperclip server's own filesystem — that resolution could hand the CLI a path that is
+ *     valid on the host but meaningless (or, worse, accidentally valid-but-wrong) on the
+ *     target. Workspace cwds are now required to already be absolute; a relative one is
+ *     rejected with `AntigravityRelativeWorkspacePathError` instead of being silently
+ *     mis-resolved.
  *
  * @copyright Antigravity Adapter Contributors (upstream), NEXUS AI Factory (fork fixes)
  * @license MIT
@@ -88,6 +97,28 @@ export class AntigravitySameHostExecutionRefusedError extends Error {
         "API). See docs/SECURITY_BOUNDARIES.md.",
     );
     this.name = "AntigravitySameHostExecutionRefusedError";
+  }
+}
+
+/**
+ * Error thrown when a Paperclip-registered workspace cwd handed to `--add-dir` is not
+ * already an absolute path. The `agy` CLI runs against `effectiveExecutionCwd` on
+ * `executionTarget` — which may be a remote host or sandbox with a filesystem unrelated to
+ * this adapter's own process — so a relative path can only ever be resolved correctly by
+ * the caller that knows the target's coordinate system. Resolving it here against this
+ * process's own `cwd()` (the pinned-upstream behavior this fork replaced) would silently
+ * hand the CLI a `--add-dir` path rooted in the wrong filesystem.
+ */
+export class AntigravityRelativeWorkspacePathError extends Error {
+  constructor(cwd: string) {
+    super(
+      `Workspace cwd "${cwd}" passed to --add-dir is not absolute. Paperclip workspace ` +
+        "cwds must be absolute paths in the execution target's own filesystem; this adapter " +
+        "cannot resolve a relative path against the Paperclip server's own cwd, since the " +
+        "Antigravity CLI runs on a possibly-remote execution target with an unrelated " +
+        "filesystem.",
+    );
+    this.name = "AntigravityRelativeWorkspacePathError";
   }
 }
 
@@ -203,11 +234,19 @@ export function compileAgyArguments(
     const wsObj = parseObject(ws);
     const wsCwd = asString(wsObj.cwd, "");
     if (wsCwd.length > 0) {
-      // Resolve away any `..`/`.` traversal segments before handing the path to the CLI.
-      // Containment against a single configured workspace root is deliberately not enforced
-      // here: Paperclip legitimately registers multiple independent workspace directories
-      // (see docs/CURRENT_STATE.md for the documented rationale).
-      args.push("--add-dir", path.resolve(wsCwd));
+      // Require an already-absolute path and normalize away `..`/`.` traversal segments
+      // in place (path.normalize, unlike path.resolve, never anchors a relative input
+      // against this process's own cwd). The CLI runs against `effectiveExecutionCwd` on
+      // `executionTarget`, which may be a remote/sandboxed filesystem with no relationship
+      // to the Paperclip server's own cwd — resolving a relative path here would silently
+      // produce a path meaningful only on the wrong filesystem. Containment against a
+      // single configured workspace root is deliberately not enforced here: Paperclip
+      // legitimately registers multiple independent workspace directories (see
+      // docs/CURRENT_STATE.md for the documented rationale).
+      if (!path.isAbsolute(wsCwd)) {
+        throw new AntigravityRelativeWorkspacePathError(wsCwd);
+      }
+      args.push("--add-dir", path.normalize(wsCwd));
     }
   }
 

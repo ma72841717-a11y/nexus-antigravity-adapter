@@ -11,11 +11,16 @@
     "./ui": "./dist/ui/index.js",
     "./cli": "./dist/cli/index.js"
   },
+  "files": [
+    "dist",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "scripts": {
     "build": "tsc && cp package.json dist/",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepack": "npm run clean && npm run build"
   },
   "dependencies": {
     "@paperclipai/adapter-utils": "2026.1005.0",
