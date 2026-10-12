@@ -9,6 +9,14 @@ verifying finding 2. Every correction below was checked directly against this ho
 permissions, the real nginx config, and the real `@paperclipai/server`/CLI source — not re-derived
 from the prior revision's assumptions.
 
+**Further corrected in response to [NEX-16](https://github.com/ma72841717-a11y/nexus-antigravity-adapter/pull/4)**,
+a follow-up independent re-review of this revision (`7db18da`): the risk this revision flagged in
+§1 but left as an "adjust if needed" owner action was traced all the way through
+`deriveAuthTrustedOrigins()` and found to be unfixable through `allowedHostnames` at all — plus two
+related problems (the auto-generated invite URL, and an `https://` scheme in §5 that the real nginx
+vhost does not support) that §1's wording did not cover. See §0b for the itemized corrections and
+the new §1a for the concrete, verified fix.
+
 Audience: the owner (root/host access), executing by hand. Every command block below is meant to
 be copy-pasted as-is; the surrounding prose explains what it does and why the ordering matters.
 
@@ -75,6 +83,14 @@ with "Failed to connect to bus" unless `XDG_RUNTIME_DIR=/run/user/995` is export
 on this host); `995` is `paperclip`'s UID (`id -u paperclip`), confirm it matches on the actual
 target host before running anything below — it will differ if `paperclip`'s UID differs there.
 
+### 0b. Corrections applied in this revision (response to NEX-16)
+
+| # | NEX-16 finding | What was verified on this host | Fix applied |
+|---|---|---|---|
+| 1 | `allowedHostnames: ["10.66.66.1"]` (this revision's own §2 instruction) produces trusted origins on port `3100`, never `13100` | Read `deriveAuthTrustedOrigins()` directly (`@paperclipai/server/dist/auth/better-auth.js:113-140`): the port it appends per hostname is `opts.listenPort ?? config.port` — **this process's own listen port**, never anything derived from the hostname string itself. There is no `host:port` syntax in `allowedHostnames` (`parseHostnameCsv` rejects it). So the real owner-facing origin, `http://10.66.66.1:13100`, can never appear in the derived set no matter what is typed into §2's prompt — the prior revision's "set the hostname" fix narrowed the risk but did not close it. | New §1a: trust the exact origin via the unconditional `BETTER_AUTH_TRUSTED_ORIGINS` env override (`@paperclipai/server/dist/index.js:521-527`), which bypasses `allowedHostnames`/`deriveAuthTrustedOrigins` entirely, plus a `paperclipai env` read-only check in §3 to verify it took effect *before* §4's restart. |
+| 2 | Auto-generated invite URL (`http://127.0.0.1:3100/invite/<token>`) is a loopback address a remote WireGuard browser cannot open unchanged | Traced `resolveBootstrapInviteBaseUrl()` (`dist/index.js:48895-48901`): it only falls back to the loopback `apiUrl` when no `PAPERCLIP_PUBLIC_URL` (or `PAPERCLIP_AUTH_PUBLIC_BASE_URL`/`BETTER_AUTH_URL`/`BETTER_AUTH_BASE_URL`) env var is set. Same function backs both the automatic post-restart invite and the manual `auth bootstrap-ceo` fallback. | §1a sets `PAPERCLIP_PUBLIC_URL=http://10.66.66.1:13100` in `.env`; §4 updated to expect the owner-facing URL printed directly, with no manual rewriting step (and a warning not to hand-rewrite it if the fix didn't take). |
+| 3 | §5's dashboard-login check said `https://10.66.66.1:13100`, but the real vhost has no TLS | Re-read `/etc/nginx/conf.d/nexus-vpn.conf` directly on this host: `listen 10.66.66.1:13100;` with no `ssl` directive, no certificate, no redirect to `https` anywhere in the file. `https://10.66.66.1:13100` would fail to connect (or hit an unrelated TLS listener, if any), not reach Paperclip. | §5 item 1 corrected to `http://10.66.66.1:13100`. Also verified this scheme choice matters beyond cosmetics: `shouldDisableSecureAuthCookies()` (`better-auth.js:36-50`) reads this same `PAPERCLIP_PUBLIC_URL` value, and an `https://` value here would mark the session cookie `Secure`, which the browser would then never send back over the real plain-HTTP connection — a second, self-inflicted lockout layered on top of finding 1. |
+
 ---
 
 ## 1. Prerequisite check — verified facts, plus the one still-open owner action
@@ -125,17 +141,74 @@ What this means, traced against the actual `@paperclipai/server` auth middleware
   cannot stand in for a live test here — the request the app actually receives is not the request
   the browser actually sent.
 
-**Action (owner, before §2):** when you reach §2's prompts, set `Allowed private hostnames` to the
-real address the dashboard is reached at over WireGuard (e.g. `10.66.66.1`) — do **not** leave it
-blank. If the owner-facing URL also uses a scheme/port not covered by `deriveAuthTrustedOrigins`'s
-`https://<host>` / `http://<host>:<port>` pattern (own install may front this differently), note the
-exact URL used and adjust: the command in §5 item 1 is the test that actually proves this is right,
-not this section's static read.
+**Action (owner, before §2):** when you reach §2's prompts, still set `Allowed private hostnames` to
+the real address the dashboard is reached at over WireGuard (`10.66.66.1`) — do **not** leave it
+blank. **This alone is not enough — see §1a below, which is the step that actually closes this
+risk.**
 
-This is still the one blocking precondition Rev 17 originally flagged, now answered with the actual
-config contents instead of "unverified" — but answering it changed the recommended action (set the
-hostname) rather than closing the question outright. Do not proceed to §2 until §5 item 1 has been
-rehearsed mentally against this config and you're prepared to supply the right hostname value.
+### 1a. Trust the exact owner-facing origin (NEX-16 correction — do this before §2)
+
+**Why `allowedHostnames` can't be made to work here:** `deriveAuthTrustedOrigins()`
+(`@paperclipai/server/dist/auth/better-auth.js:113-140`, read directly) builds, per hostname in
+`allowedHostnames`, the set `{https://<host>, http://<host>}` and — only when the port isn't 80/443 —
+adds `{https://<host>:<port>, http://<host>:<port>}`, where `<port>` is `opts.listenPort ?? config.port`,
+**this process's own listen port (`3100`)**. It is never derived from the hostname string, and
+`allowedHostnames` has no `host:port` syntax (`parseHostnameCsv` rejects a colon). So with
+`allowedHostnames: ["10.66.66.1"]` from §2, the derived set is exactly
+`{http(s)://10.66.66.1, http(s)://10.66.66.1:3100}` — **`:13100` can never appear**, no matter what is
+typed into that prompt. The owner's real browser sends `Origin: http://10.66.66.1:13100` (nginx, §1,
+is plain HTTP — confirmed below), which never matches, reproducing the exact owner-lockout NEX-13
+originally flagged.
+
+**The verified fix:** the same code that consumes `allowedHostnames`'s derived origins also merges in
+an **unconditional** env override, with no `allowedHostnames`/port-derivation involved at all
+(`dist/index.js:521-527`, read directly):
+```js
+const derivedTrustedOrigins = deriveAuthTrustedOrigins(config, { listenPort });
+const envTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
+  .split(",").map((value) => value.trim()).filter((value) => value.length > 0);
+const effectiveTrustedOrigins = Array.from(new Set([...derivedTrustedOrigins, ...envTrustedOrigins]));
+```
+Add it — together with `PAPERCLIP_PUBLIC_URL`, which fixes §4's invite-URL problem (see §0b finding
+2) — to the instance's `.env` file, the same file that already holds `PAPERCLIP_AGENT_JWT_SECRET`
+(confirmed: `paperclipai run`'s startup calls `loadPaperclipEnvFile()`, which `dotenv`-loads this exact
+file, with `override: false`, before the server reads any config — `dist/index.js:48826`, 21449-21491):
+
+```bash
+sudo -u paperclip tee -a /home/paperclip/.paperclip/instances/default/.env > /dev/null <<'EOF'
+BETTER_AUTH_TRUSTED_ORIGINS=http://10.66.66.1:13100
+PAPERCLIP_PUBLIC_URL=http://10.66.66.1:13100
+EOF
+```
+
+**Both lines are `http://`, not `https://` — this is not a placeholder, it is load-bearing.** Re-read
+directly on this host: `/etc/nginx/conf.d/nexus-vpn.conf`'s `listen 10.66.66.1:13100;` has no `ssl`
+directive, no certificate, and no redirect to `https` anywhere in the file — it is plain HTTP end to
+end. Writing `https://` here would be worse than merely wrong: `shouldDisableSecureAuthCookies()`
+(`better-auth.js:36-50`) inspects this same `PAPERCLIP_PUBLIC_URL` value, and `publicUrl.startsWith("http://")`
+is exactly the condition that disables the cookie's `Secure` flag. An `https://` value would flip that,
+and the browser would then silently refuse to send the session cookie back over the real plain-HTTP
+connection — a second, self-inflicted lockout stacked on top of the first.
+
+**Why `.env`, not `config.json`'s `auth.publicBaseUrl`:** `configure --section server` (§2, and again
+in §6's rollback) unconditionally rewrites `config.auth` to `{"baseUrlMode":"auto","disableSignUp":false}`
+whenever exposure stays `private` — verified directly in `buildCustomServerConfig`
+(`dist/index.js:22156-22179`), and this happens regardless of what was in `config.auth` before the
+prompt ran. Anything written into `config.json`'s `auth.publicBaseUrl` by hand would be silently
+discarded the next time §2 or §6 runs `configure --section server`. The two `.env` lines above are not
+affected, because `configure` never touches `.env`, and (confirmed in `@paperclipai/server/dist/config.js:107-122`)
+environment variables take precedence over `config.json` on every read.
+
+**Why not also set `PAPERCLIP_AUTH_BASE_URL_MODE=explicit`:** that would additionally pin
+`better-auth`'s own `baseURL` to a fixed value (`createBetterAuthInstance`, `better-auth.js:165-166`,
+`182`), which only matters for request-relative URL generation — and would do so while nginx is
+rewriting every proxied request's `Host` header to the literal string `127.0.0.1:3100` (§1, above), a
+mismatch with no corresponding benefit here. `BETTER_AUTH_TRUSTED_ORIGINS` alone is sufficient, is
+scoped to exactly this problem, and was verified above to not depend on `baseUrlMode` at all.
+
+Do not proceed to §2 until the `.env` edit above is saved; §3 (pre-restart validation) now includes
+the read-only check that proves it took effect, and §5 item 1 is the live test that proves the origin
+is actually trusted.
 
 ---
 
@@ -192,6 +265,28 @@ first. This instance's `.env` already has `PAPERCLIP_AGENT_JWT_SECRET` set (conf
 failure is not expected here, but confirm rather than assume — this `doctor` run is read-only (no
 `--repair`/`--fix` flag passed) and makes no changes either way.
 
+**New in this revision (NEX-16) — verify the §1a origin/public-URL fix specifically.** `doctor`'s
+`Deployment/auth mode` check (above) calls `readConfig()` and only ever looks at `config.json` — it
+does not load `.env` and so cannot see whether the `BETTER_AUTH_TRUSTED_ORIGINS`/`PAPERCLIP_PUBLIC_URL`
+lines from §1a are actually present. Confirm those with the CLI's own env inspector instead, which
+does load `.env` (the same `loadPaperclipEnvFile` call §1a relies on) and is equally read-only — there
+is no write/repair path on this command:
+
+```bash
+sudo -u paperclip env PAPERCLIP_HOME=/home/paperclip/.paperclip \
+  /home/paperclip/.local/bin/paperclipai env \
+  --config /home/paperclip/.paperclip/instances/default/config.json
+```
+
+Expect both of these rows to show source `env` with this exact value:
+```
+PAPERCLIP_PUBLIC_URL             http://10.66.66.1:13100      (env)
+BETTER_AUTH_TRUSTED_ORIGINS      http://10.66.66.1:13100      (env)
+```
+If either instead shows `(default)`, `(missing)`, a different URL, or an `https://` scheme, the §1a
+edit either wasn't saved, has a typo, or is being shadowed — do not proceed to §4 until both rows show
+`(env)` with exactly `http://10.66.66.1:13100`.
+
 ---
 
 ## 4. Restart the Paperclip service, then retrieve the bootstrap invite **as `ubuntu`, not `paperclip`**
@@ -225,12 +320,26 @@ The account that **should** read it is `ubuntu`, who is already in `adm`
 journalctl --user-unit=paperclipai.service -n 200 --no-pager | grep -A2 "bootstrap CEO invite"
 ```
 
+**Corrected in this revision (NEX-16):** the expected output below is the owner-facing URL, not a
+loopback one. Traced `resolveBootstrapInviteBaseUrl()` (`dist/index.js:48895-48901`, used for both
+this automatic post-restart invite and the manual `auth bootstrap-ceo` fallback below): it checks
+`PAPERCLIP_PUBLIC_URL` (among other env vars) *before* falling back to the loopback `apiUrl`. Because
+§1a already added `PAPERCLIP_PUBLIC_URL=http://10.66.66.1:13100` to `.env`, and `paperclipai run`'s
+startup loads that file before this invite is created, the URL printed here is already owner-facing —
+no manual host/port/scheme rewriting required:
+
 Look for lines like:
 ```
 Created bootstrap CEO invite.
-Invite URL: http://127.0.0.1:3100/invite/<token>
+Invite URL: http://10.66.66.1:13100/invite/<token>
 Expires: <ISO timestamp, 72h from creation by default>
 ```
+
+If it instead prints `http://127.0.0.1:3100/invite/<token>`, the `.env` edit from §1a did not take
+effect for this process — stop, re-run §3's `paperclipai env` check, and do **not** hand-rewrite the
+printed URL yourself (it is easy to get the scheme wrong — `https://` against this plain-HTTP vhost,
+§1a — in a way that fails silently). Fix the env var instead and mint a fresh invite (`--force`
+guidance below covers this).
 
 Treat that URL as a live, one-time bearer secret for the next 72 hours: read it directly from the
 terminal, open it immediately in a browser from a machine that can already reach `10.66.66.1:13100`,
@@ -248,6 +357,10 @@ sudo -u paperclip env PAPERCLIP_HOME=/home/paperclip/.paperclip \
   /home/paperclip/.local/bin/paperclipai auth bootstrap-ceo \
   --config /home/paperclip/.paperclip/instances/default/config.json
 ```
+This also prints the owner-facing `http://10.66.66.1:13100/invite/<token>` URL, for the same reason as
+above — it goes through the same `resolveBootstrapInviteBaseUrl()`/`PAPERCLIP_PUBLIC_URL` path, no
+`--base-url` flag needed as long as §1a's `.env` edit is in place.
+
 Do **not** add `--force` as a routine step: once an instance admin exists, `--force` still mints
 another live invite (`dist/index.js:40541-40566`) — first-admin-claim only blocks a *second user*
 from completing the claim (verified in `first-admin-claim.js`: the claim is inside a DB transaction
@@ -264,10 +377,14 @@ fallback this migration removes.
 ## 5. Verification
 
 1. **Dashboard login actually works end-to-end, through the real path — not inferred from config.**
-   Load the dashboard via `https://10.66.66.1:13100` (or whatever URL is normally used) and log in
-   with the credential from §4. This is the live test that §1 could only predict, not prove — if the
-   `allowedHostnames` value from §2 is wrong, this is where it surfaces, as a rejected sign-in rather
-   than a silent failure.
+   Load the dashboard via **`http://10.66.66.1:13100`** — **corrected in this revision (NEX-16): not
+   `https://`.** Re-confirmed directly against the live nginx vhost for this revision: `listen
+   10.66.66.1:13100;` has no `ssl`/certificate directive, so `https://10.66.66.1:13100` will simply
+   fail to connect rather than reach Paperclip at all. Log in with the credential from §4 — the invite
+   URL it printed should already be this exact `http://10.66.66.1:13100` origin (§1a/§4). This is the
+   live test that §1a could only predict, not prove — if the `BETTER_AUTH_TRUSTED_ORIGINS`/
+   `PAPERCLIP_PUBLIC_URL` values from §1a are wrong, this is where it surfaces, as a rejected sign-in
+   rather than a silent failure.
 2. **Unauthenticated access to the API is now rejected.** From the Paperclip host itself (not
    through nginx):
    ```bash
@@ -340,6 +457,17 @@ sudo -u paperclip env PAPERCLIP_HOME=/home/paperclip/.paperclip XDG_RUNTIME_DIR=
   /home/paperclip/.local/bin/paperclipai service restart
 ```
 
+**Also revert the §1a `.env` additions (NEX-16 correction):** `BETTER_AUTH_TRUSTED_ORIGINS` and
+`PAPERCLIP_PUBLIC_URL` are only read by the `authenticated`-mode code paths traced in §1a/§4
+(`deriveAuthTrustedOrigins`'s caller, `resolveBootstrapInviteBaseUrl()`) — under `local_trusted` they
+are simply unused, so leaving them in place is not harmful. For a clean rollback, remove them anyway:
+```bash
+sudo -u paperclip sed -i '/^BETTER_AUTH_TRUSTED_ORIGINS=/d;/^PAPERCLIP_PUBLIC_URL=/d' \
+  /home/paperclip/.paperclip/instances/default/.env
+```
+This does not touch `PAPERCLIP_AGENT_JWT_SECRET`/`PAPERCLIP_TOOL_ACTION_SIGNING_SECRET`, the other two
+lines already in that file — only the two lines added in §1a.
+
 **What's preserved vs. lost on rollback:**
 
 - **Preserved:** the SSH Environment, all encrypted secrets, the Discord integration, the
@@ -361,15 +489,18 @@ sudo -u paperclip env PAPERCLIP_HOME=/home/paperclip/.paperclip XDG_RUNTIME_DIR=
 |---|---|
 | Config file | `/home/paperclip/.paperclip/instances/default/config.json` |
 | Config backup (auto-created by every `configure` write) | `/home/paperclip/.paperclip/instances/default/config.json.backup` |
-| Instance env file (holds `PAPERCLIP_AGENT_JWT_SECRET`) | `/home/paperclip/.paperclip/instances/default/.env` |
+| Instance env file (holds `PAPERCLIP_AGENT_JWT_SECRET`, and — new in this revision, §1a — `BETTER_AUTH_TRUSTED_ORIGINS`/`PAPERCLIP_PUBLIC_URL`) | `/home/paperclip/.paperclip/instances/default/.env` |
 | Instance id | `default` |
 | Current (pre-migration) bind | `127.0.0.1:3100`, `local_trusted`, `private` |
+| Owner-facing origin (WireGuard, via nginx) — **`http://`, no TLS, confirmed against the live vhost** | `http://10.66.66.1:13100` |
 | Service account / unit | `paperclip` (uid verify with `id -u paperclip`), `systemctl --user paperclipai.service`, linger enabled |
 | CLI package reviewed | `paperclipai-2026.1005.0.tgz` (`dist/index.js`) |
 | Server package reviewed | `@paperclipai/server@2026.1005.0` (`middleware/auth.js`, `auth/better-auth.js`, `first-admin-claim.js`) |
-| nginx vhost (owner-facing, WireGuard) | `/etc/nginx/conf.d/nexus-vpn.conf` — `auth_basic`, `proxy_pass http://127.0.0.1:3100`, no `Authorization` forwarded |
+| nginx vhost (owner-facing, WireGuard) | `/etc/nginx/conf.d/nexus-vpn.conf` — `listen 10.66.66.1:13100;` (no `ssl` directive), `auth_basic`, `proxy_pass http://127.0.0.1:3100`, no `Authorization` forwarded |
 | Change mode | `sudo -u paperclip ... paperclipai configure --section server` |
+| Trust the exact owner-facing origin (NEX-16, §1a) | append `BETTER_AUTH_TRUSTED_ORIGINS=http://10.66.66.1:13100` + `PAPERCLIP_PUBLIC_URL=http://10.66.66.1:13100` to the instance `.env` — not `config.json`'s `auth.publicBaseUrl`, which `configure --section server` silently overwrites |
+| Verify the §1a fix before restarting (NEX-16, §3) | `sudo -u paperclip ... paperclipai env --config ...` (read-only; confirm both rows show source `env`) |
 | Mint/retrieve owner credential | `sudo -u paperclip ... paperclipai auth bootstrap-ceo` |
 | Retrieve bootstrap invite from logs | `ubuntu$ journalctl --user-unit=paperclipai.service` (not `paperclipai service logs` as `paperclip` — reproduced failing) |
 | Apply the change | `sudo -u paperclip env XDG_RUNTIME_DIR=/run/user/<paperclip-uid> ... paperclipai service restart` |
-| Pre-flight / mode check | `sudo -u paperclip ... paperclipai doctor` (not `service status` — reproduced missing `mode` field) |
+| Pre-flight / mode check | `sudo -u paperclip ... paperclipai doctor` (not `service status` — reproduced missing `mode` field; note `doctor` does not see the §1a `.env` fix — use `paperclipai env` for that) |
