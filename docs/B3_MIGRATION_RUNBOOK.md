@@ -17,6 +17,13 @@ related problems (the auto-generated invite URL, and an `https://` scheme in §5
 vhost does not support) that §1's wording did not cover. See §0b for the itemized corrections and
 the new §1a for the concrete, verified fix.
 
+**Further corrected in response to [NEX-17](https://github.com/ma72841717-a11y/nexus-antigravity-adapter/pull/4)**,
+a follow-up independent re-review of NEX-16's own fix (`5eeb517`): the §3 preflight that NEX-16 added
+to verify the §1a origin/public-URL fix ran `paperclipai env`, which unconditionally prints the live
+`PAPERCLIP_AGENT_JWT_SECRET` in cleartext as part of its export block, and documented the wrong source
+marker (`(env)` instead of the real `[environment]`). See §0c for the itemized corrections and the
+revised §3 for the read-only, secret-safe replacement check.
+
 Audience: the owner (root/host access), executing by hand. Every command block below is meant to
 be copy-pasted as-is; the surrounding prose explains what it does and why the ordering matters.
 
@@ -87,9 +94,19 @@ target host before running anything below — it will differ if `paperclip`'s UI
 
 | # | NEX-16 finding | What was verified on this host | Fix applied |
 |---|---|---|---|
-| 1 | `allowedHostnames: ["10.66.66.1"]` (this revision's own §2 instruction) produces trusted origins on port `3100`, never `13100` | Read `deriveAuthTrustedOrigins()` directly (`@paperclipai/server/dist/auth/better-auth.js:113-140`): the port it appends per hostname is `opts.listenPort ?? config.port` — **this process's own listen port**, never anything derived from the hostname string itself. There is no `host:port` syntax in `allowedHostnames` (`parseHostnameCsv` rejects it). So the real owner-facing origin, `http://10.66.66.1:13100`, can never appear in the derived set no matter what is typed into §2's prompt — the prior revision's "set the hostname" fix narrowed the risk but did not close it. | New §1a: trust the exact origin via the unconditional `BETTER_AUTH_TRUSTED_ORIGINS` env override (`@paperclipai/server/dist/index.js:521-527`), which bypasses `allowedHostnames`/`deriveAuthTrustedOrigins` entirely, plus a `paperclipai env` read-only check in §3 to verify it took effect *before* §4's restart. |
+| 1 | `allowedHostnames: ["10.66.66.1"]` (this revision's own §2 instruction) produces trusted origins on port `3100`, never `13100` | Read `deriveAuthTrustedOrigins()` directly (`@paperclipai/server/dist/auth/better-auth.js:113-140`): the port it appends per hostname is `opts.listenPort ?? config.port` — **this process's own listen port**, never anything derived from the hostname string itself. There is no `host:port` syntax in `allowedHostnames` (`parseHostnameCsv` rejects it). So the real owner-facing origin, `http://10.66.66.1:13100`, can never appear in the derived set no matter what is typed into §2's prompt — the prior revision's "set the hostname" fix narrowed the risk but did not close it. | New §1a: trust the exact origin via the unconditional `BETTER_AUTH_TRUSTED_ORIGINS` env override (`@paperclipai/server/dist/index.js:521-527`), which bypasses `allowedHostnames`/`deriveAuthTrustedOrigins` entirely, plus a read-only, secret-safe `.env`/systemd-override check in §3 to verify it took effect *before* §4's restart (NEX-17: not `paperclipai env`, which prints the live `PAPERCLIP_AGENT_JWT_SECRET` in cleartext). |
 | 2 | Auto-generated invite URL (`http://127.0.0.1:3100/invite/<token>`) is a loopback address a remote WireGuard browser cannot open unchanged | Traced `resolveBootstrapInviteBaseUrl()` (`dist/index.js:48895-48901`): it only falls back to the loopback `apiUrl` when no `PAPERCLIP_PUBLIC_URL` (or `PAPERCLIP_AUTH_PUBLIC_BASE_URL`/`BETTER_AUTH_URL`/`BETTER_AUTH_BASE_URL`) env var is set. Same function backs both the automatic post-restart invite and the manual `auth bootstrap-ceo` fallback. | §1a sets `PAPERCLIP_PUBLIC_URL=http://10.66.66.1:13100` in `.env`; §4 updated to expect the owner-facing URL printed directly, with no manual rewriting step (and a warning not to hand-rewrite it if the fix didn't take). |
 | 3 | §5's dashboard-login check said `https://10.66.66.1:13100`, but the real vhost has no TLS | Re-read `/etc/nginx/conf.d/nexus-vpn.conf` directly on this host: `listen 10.66.66.1:13100;` with no `ssl` directive, no certificate, no redirect to `https` anywhere in the file. `https://10.66.66.1:13100` would fail to connect (or hit an unrelated TLS listener, if any), not reach Paperclip. | §5 item 1 corrected to `http://10.66.66.1:13100`. Also verified this scheme choice matters beyond cosmetics: `shouldDisableSecureAuthCookies()` (`better-auth.js:36-50`) reads this same `PAPERCLIP_PUBLIC_URL` value, and an `https://` value here would mark the session cookie `Secure`, which the browser would then never send back over the real plain-HTTP connection — a second, self-inflicted lockout layered on top of finding 1. |
+
+---
+
+### 0c. Corrections applied in this revision (response to NEX-17)
+
+| # | NEX-17 finding | What was verified on this host | Fix applied |
+|---|---|---|---|
+| 1 | §3's `paperclipai env` preflight command prints a live secret to the terminal/scrollback unnecessarily | Read `envCommand`/`collectDeploymentEnvRows` directly (`dist/index.js:50317-50420`, installed `paperclipai@2026.1005.0`): the command always computes and prints a `Deployment export block` containing `export PAPERCLIP_AGENT_JWT_SECRET='<live value>'` in cleartext — there is no flag to suppress it — even though this check only needs to confirm two non-secret values (`PAPERCLIP_PUBLIC_URL`, `BETTER_AUTH_TRUSTED_ORIGINS`). | §3's NEX-16 sub-step replaced with two read-only, secret-safe `grep` checks (systemd unit/drop-ins for an overriding `Environment=`, then `.env` for the two specific `KEY=` lines) — no `paperclipai` subcommand invocation at all, and no secret ever enters output. |
+| 2 | §3 claimed the CLI marks an env-sourced row `(env)`; the real marker is different | Read the same `envCommand` formatting code: the per-row source note is built from `{env: "environment", config: "config", file: "file", default: "default", missing: "missing"}` and rendered as `` [${sourceNote}] ${note} => value`` — e.g. `[environment] ... => 'http://10.66.66.1:13100'`. `(env)` does not appear anywhere in the command's output. | Documented the real marker (`[environment]` with `=>` value) inline in §3, for anyone who runs `paperclipai env` manually despite finding 1's secret-exposure warning. |
+| 3 | §3 did not account for `.env` being silently shadowed by a systemd-level override | Read `loadPaperclipEnvFile()`'s call site (§1a: `dist/index.js:48826`, `override: false`) — dotenv does not override a key already present in the process environment. Checked this host's actual unit for such an override: `/home/paperclip/.config/systemd/user/paperclipai.service` and its `paperclipai.service.d/path.conf` drop-in set only `PAPERCLIP_SERVICE_MANAGED`, `PAPERCLIP_INSTANCE_ID`, `PAPERCLIP_HOME`, and `PATH` — confirmed neither `BETTER_AUTH_TRUSTED_ORIGINS` nor `PAPERCLIP_PUBLIC_URL` is set there today, but a future unit/drop-in edit could reintroduce exactly this silent-shadowing failure mode. | §3's replacement check greps the unit file and `*.conf` drop-ins for both keys *before* trusting the `.env` contents, so the check fails loudly instead of silently if that ever changes. |
 
 ---
 
@@ -265,27 +282,52 @@ first. This instance's `.env` already has `PAPERCLIP_AGENT_JWT_SECRET` set (conf
 failure is not expected here, but confirm rather than assume — this `doctor` run is read-only (no
 `--repair`/`--fix` flag passed) and makes no changes either way.
 
-**New in this revision (NEX-16) — verify the §1a origin/public-URL fix specifically.** `doctor`'s
-`Deployment/auth mode` check (above) calls `readConfig()` and only ever looks at `config.json` — it
-does not load `.env` and so cannot see whether the `BETTER_AUTH_TRUSTED_ORIGINS`/`PAPERCLIP_PUBLIC_URL`
-lines from §1a are actually present. Confirm those with the CLI's own env inspector instead, which
-does load `.env` (the same `loadPaperclipEnvFile` call §1a relies on) and is equally read-only — there
-is no write/repair path on this command:
+**New in this revision (NEX-17) — verify the §1a origin/public-URL fix specifically, without
+printing the live JWT secret.** `doctor`'s `Deployment/auth mode` check (above) calls `readConfig()`
+and only ever looks at `config.json` — it does not load `.env` and so cannot see whether the
+`BETTER_AUTH_TRUSTED_ORIGINS`/`PAPERCLIP_PUBLIC_URL` lines from §1a are actually present.
+
+A prior revision of this step told the owner to run `paperclipai env --config ...` instead. **Do not
+run that command for this check.** Read directly: `envCommand`/`collectDeploymentEnvRows`
+(`dist/index.js:50317-50420`, confirmed against the installed `paperclipai@2026.1005.0` build) always
+computes a row for `PAPERCLIP_AGENT_JWT_SECRET` from `.env`/the process environment and always prints
+it, in cleartext, inside a `Deployment export block` (`export PAPERCLIP_AGENT_JWT_SECRET='<the real
+secret>'`) — there is no flag to omit it and no redaction. This instance's `.env` already has that
+secret set (§3, above), so running `paperclipai env` here would needlessly print it to the terminal
+and shell scrollback for a check that only needs two non-secret values. (Also note, for anyone who
+does run `paperclipai env` for other diagnostics: the per-row source marker it prints is `[environment]`
+— e.g. `PAPERCLIP_PUBLIC_URL set     [environment] <note> => 'http://10.66.66.1:13100'` — not `(env)`;
+a prior revision of this runbook had that marker wrong.)
+
+Instead, confirm the same two facts with two read-only, secret-safe filesystem checks that together
+cover the thing that actually matters here: whether anything *shadows* the `.env` edit. Because
+`loadPaperclipEnvFile()` loads `.env` with `override: false` (§1a), any `BETTER_AUTH_TRUSTED_ORIGINS`
+or `PAPERCLIP_PUBLIC_URL` already set via a systemd `Environment=` directive would silently win over
+the `.env` file and never reach the application — so check the unit first, then the file:
 
 ```bash
-sudo -u paperclip env PAPERCLIP_HOME=/home/paperclip/.paperclip \
-  /home/paperclip/.local/bin/paperclipai env \
-  --config /home/paperclip/.paperclip/instances/default/config.json
+# 1. No systemd-level override exists for either key (expect no output — a match here means
+#    the .env edit from §1a would be silently shadowed at process start):
+sudo -u paperclip grep -H "BETTER_AUTH_TRUSTED_ORIGINS\|PAPERCLIP_PUBLIC_URL" \
+  /home/paperclip/.config/systemd/user/paperclipai.service \
+  /home/paperclip/.config/systemd/user/paperclipai.service.d/*.conf 2>/dev/null
+
+# 2. The .env file itself has exactly the two lines from §1a (greps only these two keys —
+#    does not cat the whole file, which also holds PAPERCLIP_AGENT_JWT_SECRET):
+sudo -u paperclip grep -E "^(PAPERCLIP_PUBLIC_URL|BETTER_AUTH_TRUSTED_ORIGINS)=" \
+  /home/paperclip/.paperclip/instances/default/.env
 ```
 
-Expect both of these rows to show source `env` with this exact value:
+Expect command 1 to print nothing (exit status 1 is the pass case — no override found) and command 2
+to print exactly:
 ```
-PAPERCLIP_PUBLIC_URL             http://10.66.66.1:13100      (env)
-BETTER_AUTH_TRUSTED_ORIGINS      http://10.66.66.1:13100      (env)
+PAPERCLIP_PUBLIC_URL=http://10.66.66.1:13100
+BETTER_AUTH_TRUSTED_ORIGINS=http://10.66.66.1:13100
 ```
-If either instead shows `(default)`, `(missing)`, a different URL, or an `https://` scheme, the §1a
-edit either wasn't saved, has a typo, or is being shadowed — do not proceed to §4 until both rows show
-`(env)` with exactly `http://10.66.66.1:13100`.
+If command 1 prints a match, resolve that override first — it will take precedence over `.env`
+regardless of what §1a wrote. If command 2 is missing a line, shows a different URL, or an `https://`
+scheme, the §1a edit either wasn't saved or has a typo. Do not proceed to §4 until command 1 is empty
+and command 2 matches exactly.
 
 ---
 
@@ -336,7 +378,7 @@ Expires: <ISO timestamp, 72h from creation by default>
 ```
 
 If it instead prints `http://127.0.0.1:3100/invite/<token>`, the `.env` edit from §1a did not take
-effect for this process — stop, re-run §3's `paperclipai env` check, and do **not** hand-rewrite the
+effect for this process — stop, re-run §3's `.env`/systemd-override check, and do **not** hand-rewrite the
 printed URL yourself (it is easy to get the scheme wrong — `https://` against this plain-HTTP vhost,
 §1a — in a way that fails silently). Fix the env var instead and mint a fresh invite (`--force`
 guidance below covers this).
@@ -499,8 +541,8 @@ lines already in that file — only the two lines added in §1a.
 | nginx vhost (owner-facing, WireGuard) | `/etc/nginx/conf.d/nexus-vpn.conf` — `listen 10.66.66.1:13100;` (no `ssl` directive), `auth_basic`, `proxy_pass http://127.0.0.1:3100`, no `Authorization` forwarded |
 | Change mode | `sudo -u paperclip ... paperclipai configure --section server` |
 | Trust the exact owner-facing origin (NEX-16, §1a) | append `BETTER_AUTH_TRUSTED_ORIGINS=http://10.66.66.1:13100` + `PAPERCLIP_PUBLIC_URL=http://10.66.66.1:13100` to the instance `.env` — not `config.json`'s `auth.publicBaseUrl`, which `configure --section server` silently overwrites |
-| Verify the §1a fix before restarting (NEX-16, §3) | `sudo -u paperclip ... paperclipai env --config ...` (read-only; confirm both rows show source `env`) |
+| Verify the §1a fix before restarting (NEX-17, §3) | read-only `grep` of the systemd unit/drop-ins (no override present) + `grep` of `.env` for the two key=value lines — **not** `paperclipai env`, which prints the live `PAPERCLIP_AGENT_JWT_SECRET` in cleartext |
 | Mint/retrieve owner credential | `sudo -u paperclip ... paperclipai auth bootstrap-ceo` |
 | Retrieve bootstrap invite from logs | `ubuntu$ journalctl --user-unit=paperclipai.service` (not `paperclipai service logs` as `paperclip` — reproduced failing) |
 | Apply the change | `sudo -u paperclip env XDG_RUNTIME_DIR=/run/user/<paperclip-uid> ... paperclipai service restart` |
-| Pre-flight / mode check | `sudo -u paperclip ... paperclipai doctor` (not `service status` — reproduced missing `mode` field; note `doctor` does not see the §1a `.env` fix — use `paperclipai env` for that) |
+| Pre-flight / mode check | `sudo -u paperclip ... paperclipai doctor` (not `service status` — reproduced missing `mode` field; note `doctor` does not see the §1a `.env` fix — use §3's `.env`/systemd-override check for that) |
