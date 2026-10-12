@@ -159,7 +159,10 @@ describe("independent agy process contract", () => {
       options.onSpawn?.({ pid: pending.length + 1 });
       return new Promise((resolve) => pending.push(resolve));
     });
-    const sharedSession = { sessionId: "shared-session", sessionParams: { sessionId: "shared-session", remoteExecution: { kind: "remote" } } };
+    // cwd must match the resolved execution cwd (the mocked remote workspace dir from
+    // fake.prepare) for this session to be eligible for resume under the
+    // workspace-identity binding guard in execute.ts.
+    const sharedSession = { sessionId: "shared-session", sessionParams: { sessionId: "shared-session", cwd: "/remote/project", remoteExecution: { kind: "remote" } } };
     const first = ctx({ runId: "run-a", runtime: sharedSession, config: { promptTemplate: "prompt-a" } });
     const second = ctx({ runId: "run-b", runtime: sharedSession, config: { promptTemplate: "prompt-b" } });
     const firstRun = execute(first);
