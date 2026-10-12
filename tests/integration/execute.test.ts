@@ -222,17 +222,38 @@ describe("execute() session resume workspace binding", () => {
     expect(args).not.toContain("--conversation");
   });
 
-  it("resumes a session whose stored workspaceId matches the current one", async () => {
+  it("resumes a session whose stored workspaceId and cwd both match the current ones", async () => {
     const ctx = buildCtx({
       context: { paperclipWorkspace: { workspaceId: "ws-current" }, paperclipWorkspaces: [] },
       runtime: {
         sessionId: "session-same-workspace",
-        sessionParams: { sessionId: "session-same-workspace", workspaceId: "ws-current" },
+        sessionParams: { sessionId: "session-same-workspace", workspaceId: "ws-current", cwd: "/remote/workspace" },
       },
     });
     await execute(ctx);
     const [, , , args] = runAdapterExecutionTargetProcess.mock.calls[0];
     expect(args).toEqual(expect.arrayContaining(["--conversation", "session-same-workspace"]));
+  });
+
+  it("refuses to resume a session with a matching workspaceId but a different stored cwd", async () => {
+    // Regression test for the workspace-binding gap: a workspaceId can persist across a
+    // path change (e.g. a repo re-checked-out at a new remote path), so the id match alone
+    // must not be sufficient to resume — the saved cwd has to match the resolved execution
+    // cwd too, or this leaks session state across what should be a workspace boundary.
+    const ctx = buildCtx({
+      context: { paperclipWorkspace: { workspaceId: "ws-current" }, paperclipWorkspaces: [] },
+      runtime: {
+        sessionId: "session-same-workspace-different-cwd",
+        sessionParams: {
+          sessionId: "session-same-workspace-different-cwd",
+          workspaceId: "ws-current",
+          cwd: "/remote/some-other-path",
+        },
+      },
+    });
+    await execute(ctx);
+    const [, , , args] = runAdapterExecutionTargetProcess.mock.calls[0];
+    expect(args).not.toContain("--conversation");
   });
 
   it("refuses to resume a session minted under a different cwd when neither side has a workspaceId", async () => {

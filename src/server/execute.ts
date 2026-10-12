@@ -401,15 +401,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // session id is only a valid key within the workspace it was minted in. Without this,
   // a session id that happened to match on a shared/remote execution target could be
   // resumed against an unrelated workspace (collision risk flagged in security review).
-  // Prefer the explicit Paperclip workspaceId when either side declares one (exact match
-  // required); otherwise fall back to comparing the resolved execution cwd, since that is
-  // always populated for every session this adapter itself persists.
+  // The saved cwd must ALWAYS match the resolved effective execution cwd, since that is
+  // always populated for every session this adapter itself persists; a matching
+  // workspaceId is an additional requirement layered on top when either side declares
+  // one (exact match required), not a substitute for the cwd check. A workspaceId can
+  // persist across a path change (e.g. a repo re-checked-out elsewhere, or a Paperclip
+  // workspace re-pointed to a different directory while keeping the same logical id), so
+  // trusting the id alone would let a resumed session leak across that workspace boundary.
   const currentWorkspaceId = asString(workspaceContext.workspaceId, "");
   const storedWorkspaceId = asString(runtimeSessionParams.workspaceId, "");
+  const cwdMatches = asString(runtimeSessionParams.cwd, "") === effectiveExecutionCwd;
   const workspaceIdentityMatches =
     currentWorkspaceId.length > 0 || storedWorkspaceId.length > 0
-      ? currentWorkspaceId === storedWorkspaceId
-      : asString(runtimeSessionParams.cwd, "") === effectiveExecutionCwd;
+      ? currentWorkspaceId === storedWorkspaceId && cwdMatches
+      : cwdMatches;
 
   const canResumeSession =
     runtimeSessionId.length > 0 &&

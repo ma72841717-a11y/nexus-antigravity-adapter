@@ -2,7 +2,7 @@
 
 Autonomous, independently-reviewed Paperclip external adapter for Google's Antigravity CLI (`agy`). Forked from the upstream MIT-licensed [`adapter-antigravity-local`](https://github.com/weslleycapelari/adapter-antigravity-local) project and hardened for headless execution, structured session capture, and workspace isolation — see [`docs/UPSTREAM_PROVENANCE.md`](docs/UPSTREAM_PROVENANCE.md) for the exact diff from upstream.
 
-**Status:** PR #1 (`claude/adapter-implementation-p0` → `main`) is open and under independent review; not yet merged. `npm run typecheck`, `npm run build`, and `npm test` all pass locally — see [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for the current test count and review history.
+**Status:** PR #1 (`claude/adapter-implementation-p0` → `main`) is open and under independent review; not yet merged. `npm run typecheck`, `npm run build`, and `npm test` all pass locally — **108 tests passing** as of this branch's latest commit; see [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for review history (that file's test count is updated in step with this one whenever it changes materially).
 
 This repository is developed and reviewed by the NEXUS AI team (NEXUS director, Claude implementation agent, Codex independent reviewer) under an owner-approved project charter. The resulting adapter is **not installed or enabled in any live Paperclip instance** by this project — see [`docs/SECURITY_BOUNDARIES.md`](docs/SECURITY_BOUNDARIES.md) for the permission boundary this project operates under. Final installation into a live instance is an owner/ARGUS decision made after release-candidate review, using [`docs/OWNER_INSTALL_GUIDE.md`](docs/OWNER_INSTALL_GUIDE.md).
 

@@ -1,8 +1,26 @@
 # Current State
 
-_Last updated: 2026-10-12 by Claude (NEX-8), on branch `claude/adapter-implementation-p0`._
+_Last updated: 2026-10-12 by Claude (NEX-10), on branch `claude/adapter-implementation-p0`._
 _Sections below are dated individually; later sections can supersede earlier ones without the
 earlier ones being deleted — see each section's own date before trusting a specific claim._
+
+**Current test count: 108 tests passing** (`npm run typecheck`, `npm run build`, and `npm
+test` all pass locally as of this commit). Update this line directly whenever the count
+changes materially — do not replace it with a cross-reference to an ephemeral Paperclip issue
+comment, since those are not a stable source of truth for readers of this file.
+
+## NEX-10 (2026-10-12): workspace-binding resume gap — fixed, PR #1 still open against `main`
+
+Codex Ma72's final independent review of PR #1 found that `workspaceIdentityMatches` in
+`src/server/execute.ts` matched purely on `workspaceId` equality whenever either side declared
+one, skipping the saved-cwd comparison entirely in that branch. This meant a workspace whose
+`workspaceId` persists across a path change (e.g. a repo re-checked-out at a new remote path)
+could resume a prior path's session on the same execution target — a session-state leak across
+what should be a workspace boundary. Fixed so the saved cwd must match the resolved effective
+execution cwd in all cases; a matching `workspaceId` is now an additional requirement layered
+on top when either side declares one, never a substitute for the cwd check. Added a regression
+test (`tests/integration/execute.test.ts`, "refuses to resume a session with a matching
+workspaceId but a different stored cwd") covering exactly this case.
 
 ## NEX-8 (2026-10-12): PR #1 release blockers — fixed, PR #1 still open against `main`
 
