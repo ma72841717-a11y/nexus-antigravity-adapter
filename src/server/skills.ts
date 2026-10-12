@@ -2,9 +2,11 @@
  * @fileoverview Skills synchronization and registration subsystem for Google Antigravity local CLI plugins.
  * Manages symlinks connecting Paperclip runtime skill definitions into the target `~/.agy/plugins` directory.
  *
- * Vendored unchanged (no security-relevant behavior) from
+ * Vendored with a compile-compatibility fix (no security-relevant behavior change) from
  * `@weslleycapelari/adapter-antigravity-local` at pinned commit
- * `691725a674ec28b566868b39898ffa3ff0eae4f2`. See docs/UPSTREAM_PROVENANCE.md.
+ * `691725a674ec28b566868b39898ffa3ff0eae4f2`. See docs/UPSTREAM_PROVENANCE.md — the
+ * desired-skill-set union below no longer reads a `.required` field that doesn't exist on
+ * the `@paperclipai/adapter-utils` release this fork targets.
  *
  * Not otherwise reviewed or exercised by this fork's P0 slice; tracked as deferred follow-up
  * (see docs/CURRENT_STATE.md) rather than silently assumed correct.

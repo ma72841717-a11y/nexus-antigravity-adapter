@@ -24,11 +24,15 @@ Upstream's exact `LICENSE` text and copyright notice are preserved verbatim in
 
 ## Vendoring status (P0 implementation)
 
-Vendored into `src/` with per-file attribution headers, split into "unchanged" and "fixed":
+Vendored into `src/` with per-file attribution headers, split into "unchanged", "compat-fixed",
+and "security-fixed":
 
-- **Vendored unchanged** (no security-relevant behavior): `utils.ts`, `server/index.ts`
-  (session codec), `server/skills.ts`, `cli/*`, `ui/index.ts`, `ui/parse-stdout.ts`.
-- **Vendored with fixes**: `types.ts`, `server/parse.ts`, `server/execute.ts`,
+- **Vendored unchanged** (no security-relevant behavior, no compile-compat change needed):
+  `utils.ts`, `server/index.ts` (session codec), `cli/*`, `ui/index.ts`, `ui/parse-stdout.ts`.
+- **Vendored with a compile-compatibility fix** (no security-relevant behavior change, but not
+  byte-for-byte identical to upstream): `server/skills.ts` — see "Version drift found while
+  vendoring" below for why its desired-skill-set union no longer reads a `.required` field.
+- **Vendored with security-relevant fixes**: `types.ts`, `server/parse.ts`, `server/execute.ts`,
   `server/test.ts`, `ui/build-config.ts`, `index.ts`.
 
 ### Known risks from the original audit — resolved
@@ -76,9 +80,10 @@ that three things changed between those releases and fixed accordingly:
 - `PaperclipSkillEntry` no longer has a `required` field; `server/skills.ts`'s desired-skill-set
   union no longer tries to read it.
 
-`npm run typecheck`, `npm run build`, and `npm test` (69 tests, `tests/unit/` +
-`tests/integration/execute.test.ts`) all pass locally against this pin — see the PR for the
-exact commands and output.
+_As of 2026-10-10, before PR #1 review fixes below:_ `npm run typecheck`, `npm run build`, and
+`npm test` (69 tests, `tests/unit/` + `tests/integration/execute.test.ts`) all passed locally
+against this pin. See "PR #1 review fixes" and "NEX-8" below for the test count after
+subsequent review rounds, and `docs/CURRENT_STATE.md` for the current count.
 
 ## PR #1 review fixes (NEX-5)
 
@@ -115,8 +120,48 @@ issues. All are fixed on `claude/adapter-implementation-p0`:
    run (`(null ?? 0) !== 0` is `false`) and silently returned `errorMessage: null`; it now reports
    `Antigravity terminated by signal <signal>`.
 
-**Noted but not a hard blocker, fixed as a small contained change:** `--add-dir` workspace paths
-were passed to the CLI unresolved. `compileAgyArguments` now runs each workspace cwd through
-`path.resolve` to collapse `.`/`..` traversal segments before it reaches `--add-dir`. Full
-containment against a single configured "workspace root" is deliberately **not** enforced — see
-`docs/CURRENT_STATE.md` for why.
+**Noted but not a hard blocker, fixed as a small contained change (superseded below by NEX-8):**
+`--add-dir` workspace paths were passed to the CLI unresolved. `compileAgyArguments` ran each
+workspace cwd through `path.resolve` to collapse `.`/`..` traversal segments before it reached
+`--add-dir`. Full containment against a single configured "workspace root" is deliberately
+**not** enforced — see `docs/CURRENT_STATE.md` for why.
+
+## PR #1 release-blocker fixes (NEX-8)
+
+A third independent review (Codex Ma72's second pass, PR #1 review comment) found four further
+issues, fixed on `claude/adapter-implementation-p0`:
+
+1. **Tarball shipped no code.** `package.json` declared `exports` entirely under `./dist/*`, but
+   `dist/` is gitignored and there was no `files` allowlist, `.npmignore`, or `prepack` step —
+   `npm pack`/`npm publish` produced a tarball with zero `dist/` files. Fixed: added a `files`
+   allowlist (`dist`, `THIRD_PARTY_NOTICES.md`) and a `prepack` script (`clean` + `build`).
+   Verified by actually importing all four declared exports (`.`, `./server`, `./ui`, `./cli`)
+   from a packed tarball in a separate throwaway project, not just checking file presence.
+2. **README stale/broken; doc contradictions.** The README claimed an unpushed branch and 69
+   tests, linked to two docs that didn't exist (`docs/ARCHITECTURE.md`,
+   `docs/OWNER_INSTALL_GUIDE.md`), had no install/config example or `agy` auth prerequisite, and
+   claimed "JSON result/usage parsing" despite `execute()` always returning zeroed `usage` and
+   raw stdout. `docs/CURRENT_STATE.md` had un-dated sections asserting "not pushed to GitHub" /
+   "69 tests" / "no PR" alongside its own newer sections saying the opposite.
+   `docs/UPSTREAM_PROVENANCE.md` called `server/skills.ts` "vendored unchanged" while describing
+   (a few lines later, and in the file's own header) a changed required-skill union. Fixed:
+   README rewritten with a current status line, a working install/config example, the auth
+   prerequisite, and a Limitations section; `docs/ARCHITECTURE.md` and
+   `docs/OWNER_INSTALL_GUIDE.md` added; `docs/CURRENT_STATE.md`'s historical sections dated
+   instead of left ambiguous; `server/skills.ts` reclassified above as "compat-fixed" rather
+   than "unchanged" (its own file header corrected to match).
+3. **`--add-dir` path contract.** `compileAgyArguments`'s `path.resolve(wsCwd)` silently
+   anchored a relative workspace cwd against *this process's own* cwd on the Paperclip host.
+   Since `agy` actually runs against `effectiveExecutionCwd` on a possibly-remote
+   `executionTarget`, that resolution could hand the CLI a path meaningful only on the wrong
+   filesystem. Fixed: workspace cwds are now required to already be absolute
+   (`AntigravityRelativeWorkspacePathError` otherwise); absolute paths are normalized in place
+   via `path.normalize` instead of being re-rooted. See `tests/unit/command-args.test.ts` and
+   `tests/integration/execute.test.ts` ("execute() --add-dir path contract against a remote
+   execution target") for coverage including a relative cwd against a remote target.
+4. **Merged Codex Rawea's two additional test-only commits** (`72491a0`, `f2d7c69`, test files
+   only) from `codex-rawea/adapter-tests-p0` on top of the already-merged `688bc82`. One test
+   ("keeps overlapping calls and their process handles separate") needed its shared-session
+   fixture updated to carry a `cwd` matching the resolved execution cwd, since it predated the
+   workspace-identity binding guard from NEX-5 finding 3 above and would otherwise be correctly
+   refused a resume by that guard.
