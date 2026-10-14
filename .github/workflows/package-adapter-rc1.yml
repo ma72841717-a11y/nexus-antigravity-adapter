@@ -1,0 +1,103 @@
+name: Package pinned Antigravity adapter
+
+# This workflow packages the already-reviewed v0.1.0-rc1 source.
+# It does not install, configure, or run anything on Paperclip.
+on:
+  push:
+    branches:
+      - packaging/antigravity-rc1-artifact
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build, verify, and package release candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout pinned release source (not the workflow branch)
+        uses: actions/checkout@v4
+        with:
+          ref: 84b31c3619d18d9f1a0576e893d1988f42c77899
+          path: adapter
+          persist-credentials: false
+
+      - name: Confirm exact source commit and metadata
+        working-directory: adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "84b31c3619d18d9f1a0576e893d1988f42c77899"
+          node -e "const p=require('./package.json'); if(p.name!=='@nexus-ai-factory/adapter-antigravity-local'||p.version!=='0.1.0-p0')process.exit(1)"
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: adapter/package-lock.json
+
+      - name: Install locked dependencies without lifecycle scripts
+        working-directory: adapter
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Typecheck
+        working-directory: adapter
+        run: npm run typecheck
+
+      - name: Run tests
+        working-directory: adapter
+        run: npm test
+
+      - name: Build distribution
+        working-directory: adapter
+        run: npm run build
+
+      - name: Prune dev dependencies and verify exports
+        working-directory: adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm prune --omit=dev --ignore-scripts --no-audit --no-fund
+          npm ls --omit=dev --depth=0
+          test -f dist/index.js
+          test -f dist/server/index.js
+          node --input-type=module -e "import('./dist/index.js').then(m=>{if(m.type!=='antigravity_local'||typeof m.createServerAdapter!=='function'||m.createServerAdapter().type!=='antigravity_local')process.exit(1)})"
+          if find node_modules -type f -name '*.node' -print -quit | grep -q .; then
+            echo "Native node addon found: refuse to package x86_64 binary for ARM64 Paperclip" >&2
+            exit 1
+          fi
+
+      - name: Create checksummed, versioned offline installation package
+        working-directory: adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=nexus-antigravity-adapter-v0.1.0-rc1
+          mkdir -p "../release/$name"
+          cp -a dist node_modules package.json package-lock.json LICENSE THIRD_PARTY_NOTICES.md "../release/$name/"
+          printf '%s\n' \
+            'Git repository: ma72841717-a11y/nexus-antigravity-adapter' \
+            'Git commit: 84b31c3619d18d9f1a0576e893d1988f42c77899' \
+            'Git tag: v0.1.0-rc1' \
+            'NPM package: @nexus-ai-factory/adapter-antigravity-local' \
+            'NPM version: 0.1.0-p0' \
+            'Build runner: ubuntu-24.04 x86_64; JS-only / no native .node addons' \
+            > "../release/$name/BUILD_PROVENANCE.txt"
+          tar -C ../release -czf "../release/$name.tar.gz" "$name"
+          (cd ../release && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" && sha256sum -c "$name.tar.gz.sha256")
+          tar -tzf "../release/$name.tar.gz" >/dev/null
+
+      - name: Upload checksummed installation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-antigravity-adapter-v0.1.0-rc1
+          path: |
+            release/nexus-antigravity-adapter-v0.1.0-rc1.tar.gz
+            release/nexus-antigravity-adapter-v0.1.0-rc1.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
